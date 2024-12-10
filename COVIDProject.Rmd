@@ -1,0 +1,262 @@
+---
+title: "Effectiveness of COVID-19 Vaccines in the US"
+output:
+  html_document: default
+  pdf_document: default
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+
+<br><br>
+
+This project provides an analysis of the effectiveness of COVID-19 vaccines in reducing the number of infections and deaths. The analysis is based on data from the COVID-19 Data Repository by the Center for Systems Science and Engineering (CSSE) at Johns Hopkins University <https://github.com/CSSEGISandData/COVID-19/tree/master/csse_covid_19_data/csse_covid_19_time_series>. 
+
+
+### Install and load R packages 
+
+```{r packages, echo=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+
+if (!requireNamespace("pacman", quietly = TRUE)) {
+  install.packages("pacman") 
+}
+
+library(pacman) 
+p_load(tidyverse,ggplot2, scales, nlme, texreg)
+
+```
+
+
+```{r load_data, include=FALSE}
+data_path <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/refs/heads/master/csse_covid_19_data/csse_covid_19_time_series/"
+
+data_name <- c("time_series_covid19_confirmed_US.csv", "time_series_covid19_deaths_US.csv")
+
+data_set <-  str_c(data_path, data_name)
+
+US_cases <- read_csv(data_set[1])
+US_deaths <- read_csv(data_set[2])
+
+head(US_cases)
+head(US_deaths)
+
+```
+
+
+### Data preparation
+
+The data are reshaped and cleaned, restricting the dataset to the 50 states and the District of Columbia. Observations with missing values in key variables, such as the date, are also excluded. Since the analysis is at the national level, the key variables are infection cases and deaths.
+
+```{r clean_data, echo=TRUE, warning=FALSE, message=FALSE}
+
+US_cases <- US_cases %>%
+  pivot_longer(cols= -(UID: Combined_Key),
+               names_to = "date",
+               values_to = "cases") %>%
+  select(Admin2:cases) %>%
+  rename(state = Province_State, county = Admin2) %>%
+  mutate(date=mdy(date),
+         month = format(date, "%Y-%m")) %>%
+  filter(!is.na(date)) %>%
+  filter(!state %in% c("American Samoa","Diamond Princess","Grand Princess","Guam",
+                       "Northern Mariana Islands","Puerto Rico","Virgin Islands")) %>%
+  select(-c(Lat, Long_))
+
+
+US_deaths <- US_deaths %>%
+  pivot_longer(cols= -(UID: Combined_Key),
+               names_to = "date",
+               values_to = "deaths") %>%
+  select(Admin2:deaths) %>%
+  rename(state = Province_State, county = Admin2) %>%
+  mutate(date=mdy(date),
+         month = format(date, "%Y-%m")) %>%
+  filter(!is.na(date)) %>%
+  filter(!state %in% c("American Samoa","Diamond Princess","Grand Princess","Guam",
+                                "Northern Mariana Islands","Puerto Rico","Virgin Islands")) %>%
+  select(-c(Lat, Long_))
+
+
+US_data <- US_cases %>% full_join(US_deaths) 
+rm(US_cases, US_deaths)
+
+US_data <- US_data %>% select(Combined_Key,Country_Region, state, county, month, date, everything()) 
+
+US_data <- US_data[order(US_data$date),]
+
+```
+
+### Descriptive summary 
+
+```{r aggregate_data, echo=TRUE, message=FALSE, warning=FALSE}
+
+US_by_date <- US_data %>%
+  group_by(date) %>%
+  summarise(cases = sum(cases), deaths = sum(deaths)) %>%
+  mutate(new_deaths = deaths - lag(deaths),
+         new_cases = cases - lag(cases))
+
+US_by_state<- US_data %>%
+  group_by(state, date) %>%
+  summarise(cases = sum(cases), deaths = sum(deaths)) %>%
+  mutate(new_deaths = deaths - lag(deaths),
+         new_cases = cases - lag(cases))
+
+#US_by_date %>% slice_max(new_cases) %>% select(date, cases, new_cases) 
+#US_by_date %>% slice_max(new_deaths)  %>% select(date, deaths, new_deaths) 
+#US_by_state %>% slice_max(new_cases) %>% select(state, date, cases, new_cases) 
+#US_by_state %>% slice_max(new_deaths) %>% select(state, date, deaths, new_deaths) 
+
+summary(US_by_date) 
+
+summary(US_by_state) 
+
+```
+
+
+```{r clean_data_summary_date, echo=FALSE}
+
+US_by_date %>%
+  filter(cases > 0) %>%
+  ggplot(aes(x= date, y = cases)) +
+  geom_line(aes(color = "Cases"), linewidth = 0.7) + 
+  geom_point(aes(color = "Cases")) +
+  geom_line(aes(y = deaths, color = "Deaths"), linewidth = 0.7 ) + 
+  geom_point(aes(y = deaths, color = "Deaths")) +
+  labs(
+    title = "US COVID-19 Daily Cases and Deaths, Jan 2020 - March 2023",
+    x = "",
+    y = "Number of COVID-19 Cases/Deaths"
+  ) +
+  scale_color_manual(values = c("Cases" = "blue", "Deaths" = "red"),  # Blue and Orange
+                     labels = c("Cases", "Deaths")) +
+  scale_y_log10(labels = comma) + 
+  scale_x_date(breaks = seq(as.Date("2020-01-01"), as.Date("2023-03-31"), by = "3 months"),
+               labels = date_format("%b %Y")) +
+  theme_minimal() +
+  theme(legend.position = "bottom", axis.text.x = element_text(angle = 90, hjust = 1))  +
+guides(color = guide_legend(title = NULL))
+
+# Y-axis values are in log scale, but label are actual values
+
+```
+<br>
+
+As can be seen from the line graph, the number of COVID-19 cases and deaths sharply rose between January 2020 and July 2020. From July 2020 to April 2021, the rates continued to rise but at a slower pace, and largely leveled off through much of 2022. Despite the actual number of deaths, the fatality rate remained relatively low. A notable exception is during the early stages of the pandemic when it was significantly higher.
+
+<br>
+
+```{r clean_data_summary_state, echo=FALSE}
+
+######################
+
+# By state
+US_by_state %>%
+  group_by(state) %>%
+  summarise(new_cases = sum(new_cases, na.rm = TRUE), new_deaths = sum(new_deaths, na.rm = TRUE)) %>%
+  filter(new_cases > 0) %>%
+ggplot(aes(y = reorder(state, new_cases), x = new_cases)) +
+  geom_bar(stat = "identity", fill = "blue") +
+  labs(x = "State", y = "", title = "New COVID-19 Cases by State") +
+  scale_x_continuous(labels = comma) +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 7, angle = 0), axis.text.x = element_text(angle = 0, hjust = 1)) 
+
+US_by_state %>%
+  group_by(state) %>%
+  summarise(new_cases = sum(new_cases, na.rm = TRUE), new_deaths = sum(new_deaths, na.rm = TRUE))%>%
+  filter(new_cases > 0) %>%
+  ggplot(aes(y = reorder(state, new_deaths), x = new_deaths)) +
+  geom_bar(stat = "identity", fill = "red") +
+  labs(x = "State", y = "", title = "New COVID-19 Deaths by State") +
+  scale_x_continuous(labels = comma) +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 7, angle = 0), axis.text.x = element_text(angle = 0, hjust = 1)) 
+
+```
+<br>
+
+On the other hand, the bar graph shows that the top three states for both new COVID-19 infections and deaths were California, Texas, and Florida. The least affected states for infections were the District of Columbia, Wyoming, and Vermont. However, for deaths, Wyoming is replaced by Alaska. It is important to note that these rankings reflect actual numbers, not proportions. Hence, these rankings partly reflect the population size of these states. As a side note, since the analysis pertains to human lives, presenting the actual numbers rather than only proportions is equally important.
+
+<br>
+
+### Interrupted Time Series Model
+
+The ideal approach to testing the effectiveness of COVID-19 vaccines is to use data from randomized controlled trials. In the absence of such data, the appropriate method is to use non-experimental data while controlling for confounding factors. In this context, an interrupted time series approach is applied. This approach fits the purpose at hand for at least two reasons. First, the data contain known date of policy change (December 14, 2020, when the COVID-19 vaccines became available). Second, because the data provide large number of observations before and after the vaccine rollout, it is possible to credibly establish the counterfactual (that is, the number of cases and deaths that would have occurred without the introduction of the vaccines) to estimate the vaccine efficacy. The estimation equation is given by:
+
+$$
+y_t = \alpha_0 + \alpha_1 Time + \alpha_2 PostVaccineRollout + \alpha_3 TimeSinceVaccineRollout + e_t
+$$
+where $y_t$ is the number of new cases or deaths, $Time$ is number of days, $PostVaccineRollout$ is binary variable taking a value of 1 if the date is on or after December 14, 2020, and 0 otherwise, $TimeSinceVaccineRollout$ is the number of days since the vaccines rollout, and $y_t$ is error term. The model is estimated using generalized least squares technique. 
+
+
+
+```{r its_model, echo=FALSE}
+
+# Define the intervention date
+vaxx_date <- as.Date("2020-12-14")
+
+# Add new variables
+US_its <- US_by_date %>%
+  filter(!is.na(new_cases)) %>%
+  mutate(
+    time = row_number(),  
+    post_vaxx_date = ifelse(date >= vaxx_date, 1, 0),  # 2. Binary variable
+    time_since_vaxx = ifelse(date >= vaxx_date, as.numeric(date - vaxx_date), 0)  # 3. Time elapsed
+  )
+
+# Impact on new cases
+model_new_cases <- gls(new_cases ~ time + post_vaxx_date + time_since_vaxx, data = US_its,method="ML")
+#summary(model_new_cases)
+
+# Impact on new deaths
+model_new_deaths <- gls(new_deaths ~ time + post_vaxx_date + time_since_vaxx, data = US_its, method="ML")
+#summary(model_new_deaths)
+
+# ARMA models
+# gls(new_cases ~ time + post_vaxx_date + time_since_vaxx, data = US_its, method="ML", correlation = corARMA(p = 1, q = 1))
+# gls(new_deaths ~ time + post_vaxx_date + time_since_vaxx, data = US_its, method="ML", correlation = corARMA(p = 1, q = 1))
+
+
+
+varible_label <- list(
+  time = "Time (days)",
+  post_vaxx_date = "Post-Vaccination",
+  time_since_vaxx = "Time Since Vaccination (days)"
+)
+
+screenreg(
+  list(model_new_cases, model_new_deaths),
+  custom.coef.map = c("(Intercept)" = "Intercept", varible_label),       
+  custom.model.names = c("New Cases", "New Deaths")
+)
+
+```
+
+<br>
+
+The estimates suggest that vaccines are effective. Specifically, the time variable (444.88) is positive and significant, indicating that the number of new cases tends to increase over time. The post vaccine rollout variable is not significant, implying no immediate change in new cases following the rollout. Regarding the number of days since vaccination, we see that as time since vaccination increases, new cases decrease by 519.85, which is statistically significant.
+
+In the case of new deaths, after the vaccine rollout, the number of deaths increases by 407.30, which might partly reflect time lag between infection and death. The longer the time since vaccine rollout, the lower the number of deaths (-4.94), which is highly significant. These results warrant careful interpretation, especially considering potential biases in data records due to the difficulty of accurately identifying the causes of deaths.
+
+
+### Conclusion
+
+Overall, the estimates suggest that the vaccines helped lower the number of cases and deaths. However, there are important caveats that call for caution and further analysis. First, establishing causality is difficult when the data are not generated from randomized control trials. Therefore, it is necessary to control for confounders such as the timing of different variants like Delta and Omicron, as well as changes in testing rates, social distancing and lockdown measures, healthcare capacity, and similar factors.
+
+Second, there may be potential sources of bias due to incomplete or inaccurate data. In particular, extra caution is needed when defining COVID-related deaths; that is, whether they are deaths caused by COVID or deaths of individuals with COVID. Additionally, biases may arise from personal beliefs about vaccines. For instance, some might interpret the results as both statistically significant and economically large, while others may view them as too small.
+
+
+<br>
+\vspace{0.5in}
+
+**Additional material**
+
+GitHub: <https://github.com/kgmaysd/COVID-19>
+
